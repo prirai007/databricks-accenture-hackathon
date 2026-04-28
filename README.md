@@ -1,6 +1,6 @@
 # Medical Intelligence Agent
 
-Bridging Medical Deserts** | Databricks Track
+Bridging Medical Deserts | Databricks Track
 
 An Intelligent Document Parsing (IDP) agent that extracts, verifies, and reasons over medical facility data from Ghana to identify medical deserts and infrastructure gaps.
 
