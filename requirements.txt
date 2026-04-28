@@ -26,3 +26,6 @@ fpdf2>=2.8.0
 
 # Testing
 pytest==9.0.2
+
+sentence-transformers==2.7.0
+faiss-cpu==1.8.0

@@ -8,6 +8,16 @@ Three tabs:
   3. Map — full-width Folium map with filters and medical desert overlay
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Load cloud secrets if on Streamlit Cloud
+try:
+    from src.cloud_config import *  # noqa
+except Exception:
+    pass
+
 import json
 import os
 import re
