@@ -61,7 +61,7 @@ def query_llm(
     max_tokens: int = 2048,
     temperature: float = 0.1,
 ) -> str:
-    """Call LLM for inference. Tries Databricks first, falls back to OpenRouter.
+    """Call LLM for inference. Tries OpenRouter first, falls back to Databricks.
 
     Args:
         system_prompt: System-level instructions for the LLM.
@@ -72,20 +72,27 @@ def query_llm(
     Returns:
         The LLM's text response.
     """
-    # ── Primary: Databricks Model Serving ──
-    try:
-        response = db_client.serving_endpoints.query(
-            name=LLM_ENDPOINT,
-            messages=[
-                ChatMessage(role=ChatMessageRole.SYSTEM, content=system_prompt),
-                ChatMessage(role=ChatMessageRole.USER, content=user_message),
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.warning("Databricks Model Serving failed: %s — falling back to OpenRouter", e)
+    # ── Primary: OpenRouter ──
+    if OPENROUTER_API_KEY:
+        try:
+            return _call_openrouter(system_prompt, user_message, max_tokens, temperature)
+        except Exception as e:
+            logger.warning("OpenRouter failed: %s — trying Databricks", e)
 
-    # ── Fallback: OpenRouter ──
-    return _call_openrouter(system_prompt, user_message, max_tokens, temperature)
+    # ── Fallback: Databricks Model Serving ──
+    if LLM_ENDPOINT:
+        try:
+            response = db_client.serving_endpoints.query(
+                name=LLM_ENDPOINT,
+                messages=[
+                    ChatMessage(role=ChatMessageRole.SYSTEM, content=system_prompt),
+                    ChatMessage(role=ChatMessageRole.USER, content=user_message),
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.warning("Databricks Model Serving failed: %s", e)
+
+    raise RuntimeError("No LLM available. Set OPENROUTER_API_KEY in .env")
