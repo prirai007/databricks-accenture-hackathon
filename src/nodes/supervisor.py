@@ -93,13 +93,13 @@ def supervisor_node(state: AgentState) -> dict:
     raw_query = state["query"]
 
     # Step 1: Normalize — fix typos & grammar
-    cleaned = query_llm(NORMALIZE_PROMPT, raw_query, max_tokens=150).strip()
-    # Fallback: if normalization returns empty or something weird, keep original
+    cleaned = (query_llm(NORMALIZE_PROMPT, raw_query, max_tokens=150) or raw_query).strip()
+# Fallback: if normalization returns empty or something weird, keep original
     if not cleaned or len(cleaned) > len(raw_query) * 5:
-        cleaned = raw_query
+     cleaned = raw_query
 
-    # Step 2: Classify intent(s) on the cleaned query
-    raw_intent = query_llm(ROUTER_PROMPT, cleaned, max_tokens=20).strip().upper()
+# Step 2: Classify intent(s) on the cleaned query
+    raw_intent = (query_llm(ROUTER_PROMPT, cleaned, max_tokens=20) or "SQL").strip().upper()
 
     # Parse: "GEO,SQL" → ["GEO", "SQL"] or "SQL" → ["SQL"]
     tokens = [t.strip() for t in raw_intent.replace(" ", "").split(",")]

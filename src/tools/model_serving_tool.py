@@ -51,7 +51,8 @@ def _call_openrouter(
         timeout=60,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    content = resp.json()["choices"][0]["message"]["content"]
+    return content if content is not None else ""
 
 
 @mlflow.trace(name="query_llm", span_type="LLM")
