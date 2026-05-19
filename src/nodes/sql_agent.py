@@ -105,11 +105,15 @@ def _run_sql_direct(sql: str) -> tuple[list[list[str]], list[str]]:
         return [], []
     wh_id = warehouses[0].id
 
+    from databricks.sdk.service.sql import Disposition
+
     resp = db_client.statement_execution.execute_statement(
-        warehouse_id=wh_id,
-        statement=sql,
-        catalog=catalog,
-        schema=schema,
+    warehouse_id=wh_id,
+    statement=sql,
+    catalog=catalog,
+    schema=schema,
+    wait_timeout="30s",
+    disposition=Disposition.INLINE,
     )
     rows = []
     columns = []
@@ -119,18 +123,97 @@ def _run_sql_direct(sql: str) -> tuple[list[list[str]], list[str]]:
         columns = [c.name for c in resp.manifest.schema.columns]
     return rows, columns
 
+def _build_fallback_sql(query: str) -> str:
+    """Build direct SQL from common query patterns when Genie times out."""
+    catalog = os.getenv("DATABRICKS_CATALOG", "virtue_foundation")
+    schema = os.getenv("DATABRICKS_SCHEMA", "ghana_medical")
+    table = f"{catalog}.{schema}.ghana_facilities"
+    q = query.lower()
+
+    specialties = [
+        "cardiology", "ophthalmology", "pediatrics", "generalSurgery",
+        "emergencyMedicine", "gynecologyAndObstetrics", "orthopedicSurgery",
+        "internalMedicine", "familyMedicine", "dentistry", "radiology",
+        "surgery", "neurology", "oncology", "dermatology", "urology"
+    ]
+
+    for spec in specialties:
+        if spec.lower() in q:
+            if any(k in q for k in ["how many", "count", "number"]):
+                return f"SELECT COUNT(*) as count FROM {table} WHERE specialties LIKE '%{spec}%'"
+            elif any(k in q for k in ["region", "where", "which area"]):
+                return f"""
+                    SELECT region_normalized, COUNT(*) as count
+                    FROM {table}
+                    WHERE specialties LIKE '%{spec}%'
+                    GROUP BY region_normalized
+                    ORDER BY count DESC
+                """
+            else:
+                return f"""
+                    SELECT name, region_normalized, facilityTypeId, address_city
+                    FROM {table}
+                    WHERE specialties LIKE '%{spec}%'
+                    LIMIT 20
+                """
+
+    if any(k in q for k in ["how many", "count"]):
+        if "hospital" in q:
+            return f"SELECT COUNT(*) as count FROM {table} WHERE facilityTypeId = 'hospital'"
+        if "clinic" in q:
+            return f"SELECT COUNT(*) as count FROM {table} WHERE facilityTypeId = 'clinic'"
+        return f"SELECT facilityTypeId, COUNT(*) as count FROM {table} GROUP BY facilityTypeId ORDER BY count DESC"
+
+    if "region" in q and any(k in q for k in ["most", "highest", "top"]):
+        return f"""
+            SELECT region_normalized, COUNT(*) as facility_count
+            FROM {table}
+            WHERE region_normalized IS NOT NULL
+            GROUP BY region_normalized
+            ORDER BY facility_count DESC
+            LIMIT 10
+        """
+
+    return f"""
+        SELECT name, region_normalized, facilityTypeId, address_city
+        FROM {table}
+        WHERE facilityTypeId IS NOT NULL
+        LIMIT 20
+    """
 
 @mlflow.trace(name="sql_agent_node", span_type="AGENT")
 def sql_agent_node(state: AgentState) -> dict:
-    """SQL Agent — forwards query to Genie, returns structured results + citation.
+    """SQL Agent — forwards query to Genie, falls back to direct SQL on timeout."""
+    query = state["query"]
+    result = None
+    used_fallback = False
 
-    If Genie returns only an aggregate count, rewrites the generated SQL
-    to fetch actual facility names/regions/types and runs it directly.
-    """
-    result = query_genie(state["query"])
+    # Step 1: Try Genie
+    try:
+        result = query_genie(query)
+    except Exception as e:
+        log.warning("Genie failed: %s — switching to direct SQL", e)
 
-    # If we only got a count, rewrite SQL to get the actual facility rows
-    if _is_aggregate_only(result):
+    # Step 2: If Genie timed out or returned nothing, use direct SQL
+    if not result or (not result.get("data") and not result.get("text")):
+        log.info("Genie returned no data — running direct SQL fallback")
+        used_fallback = True
+        fallback_sql = _build_fallback_sql(query)
+        try:
+            rows, cols = _run_sql_direct(fallback_sql)
+            result = {
+                "sql": fallback_sql,
+                "columns": cols,
+                "data": rows,
+                "text": f"Direct SQL returned {len(rows)} result(s).",
+                "description": "Direct SQL fallback (Genie timed out)",
+            }
+        except Exception as e:
+            log.warning("Direct SQL fallback also failed: %s", e)
+            result = result or {}
+
+    # Step 3: If we got aggregate only, rewrite to get facility rows
+    if not used_fallback and _is_aggregate_only(result):
         log.info("Aggregate-only result — rewriting SQL to fetch facility details")
         original_sql = result.get("sql", "")
         detail_sql = _rewrite_count_to_select(original_sql)
@@ -139,7 +222,6 @@ def sql_agent_node(state: AgentState) -> dict:
             try:
                 rows, cols = _run_sql_direct(detail_sql)
                 if rows:
-                    # Deduplicate by facility name (first column)
                     seen = set()
                     unique_rows = []
                     for row in rows:
@@ -147,7 +229,6 @@ def sql_agent_node(state: AgentState) -> dict:
                         if key and key not in seen:
                             seen.add(key)
                             unique_rows.append(row)
-                    # Fill missing regions
                     unique_rows = [_fill_region(list(r)) for r in unique_rows]
                     result["detail_data"] = unique_rows
                     result["detail_columns"] = cols
@@ -155,11 +236,10 @@ def sql_agent_node(state: AgentState) -> dict:
             except Exception as e:
                 log.warning("Direct SQL execution failed: %s", e)
 
-        # Fallback: try Genie follow-up if SQL rewrite didn't work
         if not result.get("detail_data"):
             log.info("SQL rewrite didn't produce results — trying Genie follow-up")
             try:
-                detail_query = f"List the names, regions, and types of the facilities for: {state['query']}"
+                detail_query = f"List the names, regions, and types of the facilities for: {query}"
                 detail_result = query_genie(detail_query)
                 if detail_result.get("data"):
                     result["detail_data"] = detail_result["data"]
@@ -169,5 +249,7 @@ def sql_agent_node(state: AgentState) -> dict:
 
     return {
         "sql_result": result,
-        "citations": [{"source": "genie", "sql": result.get("sql"), "description": result.get("description")}],
+        "citations": [{"source": "genie" if not used_fallback else "direct_sql",
+                       "sql": result.get("sql"),
+                       "description": result.get("description")}],
     }
