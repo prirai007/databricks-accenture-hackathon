@@ -344,7 +344,7 @@ def update_env():
         "GENIE_SPACE_ID": os.getenv("GENIE_SPACE_ID", ""),
         "VECTOR_SEARCH_INDEX": VS_INDEX,
         "VECTOR_SEARCH_ENDPOINT": VS_ENDPOINT,
-        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
+        "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY", ""),
     }
 
     with open(ENV_PATH, "w") as f:
@@ -354,7 +354,7 @@ def update_env():
                      "VECTOR_SEARCH_INDEX", "VECTOR_SEARCH_ENDPOINT"]:
             f.write(f"{key}={env_vars[key]}\n")
         f.write("\n# === LLM (fallback if Model Serving quota exceeded) ===\n")
-        f.write(f"OPENAI_API_KEY={env_vars['OPENAI_API_KEY']}\n")
+        f.write(f"OPENROUTER_API_KEY={env_vars['OPENROUTER_API_KEY']}\n")
 
     print(f"  Updated {ENV_PATH}:")
     print(f"    DATABRICKS_CATALOG={CATALOG}")
